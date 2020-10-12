@@ -7,19 +7,23 @@
 
 #include <optional.h>               // For Optional and nullopt
 #include <primitives/transaction.h> // For CTransactionRef
+#include <util/settings.h>          // For util::SettingsValue
 
+#include <functional>
 #include <memory>
 #include <stddef.h>
 #include <stdint.h>
 #include <string>
 #include <vector>
 
+class ArgsManager;
 class CBlock;
 class CFeeRate;
 class CRPCCommand;
 class CScheduler;
 class Coin;
 class uint256;
+enum class MemPoolRemovalReason;
 enum class RBFTransactionState;
 struct bilingual_str;
 struct CBlockLocator;
@@ -225,7 +229,7 @@ public:
     virtual void initMessage(const std::string& message) = 0;
 
     //! Send init warning.
-    virtual void initWarning(const std::string& message) = 0;
+    virtual void initWarning(const bilingual_str& message) = 0;
 
     //! Send init error.
     virtual void initError(const bilingual_str& message) = 0;
@@ -238,8 +242,8 @@ public:
     {
     public:
         virtual ~Notifications() {}
-        virtual void transactionAddedToMempool(const CTransactionRef& tx) {}
-        virtual void transactionRemovedFromMempool(const CTransactionRef& ptx) {}
+        virtual void transactionAddedToMempool(const CTransactionRef& tx, uint64_t mempool_sequence) {}
+        virtual void transactionRemovedFromMempool(const CTransactionRef& tx, MemPoolRemovalReason reason, uint64_t mempool_sequence) {}
         virtual void blockConnected(const CBlock& block, int height) {}
         virtual void blockDisconnected(const CBlock& block, int height) {}
         virtual void updatedBlockTip() {}
@@ -265,6 +269,12 @@ public:
 
     //! Current RPC serialization flags.
     virtual int rpcSerializationFlags() = 0;
+
+    //! Return <datadir>/settings.json setting value.
+    virtual util::SettingsValue getRwSetting(const std::string& name) = 0;
+
+    //! Write a setting to <datadir>/settings.json.
+    virtual bool updateRwSetting(const std::string& name, const util::SettingsValue& value) = 0;
 
     //! Synchronously send transactionAddedToMempool notifications about all
     //! current mempool transactions to the specified handler and return after
@@ -304,23 +314,10 @@ public:
 
     //! Set mock time.
     virtual void setMockTime(int64_t time) = 0;
-
-    //! Return interfaces for accessing wallets (if any).
-    virtual std::vector<std::unique_ptr<Wallet>> getWallets() = 0;
 };
 
 //! Return implementation of Chain interface.
 std::unique_ptr<Chain> MakeChain(NodeContext& node);
-
-//! Return implementation of ChainClient interface for a wallet client. This
-//! function will be undefined in builds where ENABLE_WALLET is false.
-//!
-//! Currently, wallets are the only chain clients. But in the future, other
-//! types of chain clients could be added, such as tools for monitoring,
-//! analysis, or fee estimation. These clients need to expose their own
-//! MakeXXXClient functions returning their implementations of the ChainClient
-//! interface.
-std::unique_ptr<ChainClient> MakeWalletClient(Chain& chain, std::vector<std::string> wallet_filenames);
 
 } // namespace interfaces
 

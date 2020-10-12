@@ -10,7 +10,6 @@
 #endif
 
 #ifdef WIN32
-#define WIN32_LEAN_AND_MEAN 1
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -29,7 +28,6 @@
 #endif
 
 LockedPoolManager* LockedPoolManager::_instance = nullptr;
-std::once_flag LockedPoolManager::init_flag;
 
 /*******************************************************************************/
 // Utilities

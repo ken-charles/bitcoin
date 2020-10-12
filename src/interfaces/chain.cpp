@@ -13,6 +13,7 @@
 #include <node/coin.h>
 #include <node/context.h>
 #include <node/transaction.h>
+#include <node/ui_interface.h>
 #include <policy/fees.h>
 #include <policy/policy.h>
 #include <policy/rbf.h>
@@ -25,7 +26,6 @@
 #include <sync.h>
 #include <timedata.h>
 #include <txmempool.h>
-#include <ui_interface.h>
 #include <uint256.h>
 #include <univalue.h>
 #include <util/system.h>
@@ -59,13 +59,13 @@ public:
     explicit NotificationsProxy(std::shared_ptr<Chain::Notifications> notifications)
         : m_notifications(std::move(notifications)) {}
     virtual ~NotificationsProxy() = default;
-    void TransactionAddedToMempool(const CTransactionRef& tx) override
+    void TransactionAddedToMempool(const CTransactionRef& tx, uint64_t mempool_sequence) override
     {
-        m_notifications->transactionAddedToMempool(tx);
+        m_notifications->transactionAddedToMempool(tx, mempool_sequence);
     }
-    void TransactionRemovedFromMempool(const CTransactionRef& tx) override
+    void TransactionRemovedFromMempool(const CTransactionRef& tx, MemPoolRemovalReason reason, uint64_t mempool_sequence) override
     {
-        m_notifications->transactionRemovedFromMempool(tx);
+        m_notifications->transactionRemovedFromMempool(tx, reason, mempool_sequence);
     }
     void BlockConnected(const std::shared_ptr<const CBlock>& block, const CBlockIndex* index) override
     {
@@ -127,7 +127,7 @@ public:
         ::tableRPC.appendCommand(m_command.name, &m_command);
     }
 
-    void disconnect() override final
+    void disconnect() final
     {
         if (m_wrapped_command) {
             m_wrapped_command = nullptr;
@@ -276,13 +276,15 @@ public:
     }
     RBFTransactionState isRBFOptIn(const CTransaction& tx) override
     {
-        LOCK(::mempool.cs);
-        return IsRBFOptIn(tx, ::mempool);
+        if (!m_node.mempool) return IsRBFOptInEmptyMempool(tx);
+        LOCK(m_node.mempool->cs);
+        return IsRBFOptIn(tx, *m_node.mempool);
     }
     bool hasDescendantsInMempool(const uint256& txid) override
     {
-        LOCK(::mempool.cs);
-        auto it = ::mempool.GetIter(txid);
+        if (!m_node.mempool) return false;
+        LOCK(m_node.mempool->cs);
+        auto it = m_node.mempool->GetIter(txid);
         return it && (*it)->GetCountWithDescendants() > 1;
     }
     bool broadcastTransaction(const CTransactionRef& tx,
@@ -298,7 +300,9 @@ public:
     }
     void getTransactionAncestry(const uint256& txid, size_t& ancestors, size_t& descendants) override
     {
-        ::mempool.GetTransactionAncestry(txid, ancestors, descendants);
+        ancestors = descendants = 0;
+        if (!m_node.mempool) return;
+        m_node.mempool->GetTransactionAncestry(txid, ancestors, descendants);
     }
     void getPackageLimits(unsigned int& limit_ancestor_count, unsigned int& limit_descendant_count) override
     {
@@ -307,6 +311,7 @@ public:
     }
     bool checkChainLimits(const CTransactionRef& tx) override
     {
+        if (!m_node.mempool) return true;
         LockPoints lp;
         CTxMemPoolEntry entry(tx, 0, 0, 0, false, 0, lp);
         CTxMemPool::setEntries ancestors;
@@ -315,8 +320,9 @@ public:
         auto limit_descendant_count = gArgs.GetArg("-limitdescendantcount", DEFAULT_DESCENDANT_LIMIT);
         auto limit_descendant_size = gArgs.GetArg("-limitdescendantsize", DEFAULT_DESCENDANT_SIZE_LIMIT) * 1000;
         std::string unused_error_string;
-        LOCK(::mempool.cs);
-        return ::mempool.CalculateMemPoolAncestors(entry, ancestors, limit_ancestor_count, limit_ancestor_size,
+        LOCK(m_node.mempool->cs);
+        return m_node.mempool->CalculateMemPoolAncestors(
+            entry, ancestors, limit_ancestor_count, limit_ancestor_size,
             limit_descendant_count, limit_descendant_size, unused_error_string);
     }
     CFeeRate estimateSmartFee(int num_blocks, bool conservative, FeeCalculation* calc) override
@@ -329,7 +335,8 @@ public:
     }
     CFeeRate mempoolMinFee() override
     {
-        return ::mempool.GetMinFee(gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000);
+        if (!m_node.mempool) return {};
+        return m_node.mempool->GetMinFee(gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000);
     }
     CFeeRate relayMinFee() override { return ::minRelayTxFee; }
     CFeeRate relayIncrementalFee() override { return ::incrementalRelayFee; }
@@ -344,7 +351,7 @@ public:
     bool shutdownRequested() override { return ShutdownRequested(); }
     int64_t getAdjustedTime() override { return GetAdjustedTime(); }
     void initMessage(const std::string& message) override { ::uiInterface.InitMessage(message); }
-    void initWarning(const std::string& message) override { InitWarning(message); }
+    void initWarning(const bilingual_str& message) override { InitWarning(message); }
     void initError(const bilingual_str& message) override { InitError(message); }
     void showProgress(const std::string& title, int progress, bool resume_possible) override
     {
@@ -372,11 +379,33 @@ public:
         RPCRunLater(name, std::move(fn), seconds);
     }
     int rpcSerializationFlags() override { return RPCSerializationFlags(); }
+    util::SettingsValue getRwSetting(const std::string& name) override
+    {
+        util::SettingsValue result;
+        gArgs.LockSettings([&](const util::Settings& settings) {
+            if (const util::SettingsValue* value = util::FindKey(settings.rw_settings, name)) {
+                result = *value;
+            }
+        });
+        return result;
+    }
+    bool updateRwSetting(const std::string& name, const util::SettingsValue& value) override
+    {
+        gArgs.LockSettings([&](util::Settings& settings) {
+            if (value.isNull()) {
+                settings.rw_settings.erase(name);
+            } else {
+                settings.rw_settings[name] = value;
+            }
+        });
+        return gArgs.WriteSettingsFile();
+    }
     void requestMempoolTransactions(Notifications& notifications) override
     {
-        LOCK2(::cs_main, ::mempool.cs);
-        for (const CTxMemPoolEntry& entry : ::mempool.mapTx) {
-            notifications.transactionAddedToMempool(entry.GetSharedTx());
+        if (!m_node.mempool) return;
+        LOCK2(::cs_main, m_node.mempool->cs);
+        for (const CTxMemPoolEntry& entry : m_node.mempool->mapTx) {
+            notifications.transactionAddedToMempool(entry.GetSharedTx(), 0 /* mempool_sequence */);
         }
     }
     NodeContext& m_node;

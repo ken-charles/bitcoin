@@ -67,26 +67,6 @@ fs::path GetWalletDir();
 //! Get wallets in wallet directory.
 std::vector<fs::path> ListWalletDir();
 
-//! The WalletLocation class provides wallet information.
-class WalletLocation final
-{
-    std::string m_name;
-    fs::path m_path;
-
-public:
-    explicit WalletLocation() {}
-    explicit WalletLocation(const std::string& name);
-
-    //! Get wallet name.
-    const std::string& GetName() const { return m_name; }
-
-    //! Get wallet absolute path.
-    const fs::path& GetPath() const { return m_path; }
-
-    //! Return whether the wallet exists.
-    bool Exists() const;
-};
-
 /** Descriptor with some wallet metadata */
 class WalletDescriptor
 {
@@ -98,26 +78,22 @@ public:
     int32_t next_index = 0; // Position of the next item to generate
     DescriptorCache cache;
 
-    ADD_SERIALIZE_METHODS;
-
-    template <typename Stream, typename Operation>
-    inline void SerializationOp(Stream& s, Operation ser_action) {
-        if (ser_action.ForRead()) {
-            std::string desc;
-            std::string error;
-            READWRITE(desc);
-            FlatSigningProvider keys;
-            descriptor = Parse(desc, keys, error, true);
-            if (!descriptor) {
-                throw std::ios_base::failure("Invalid descriptor: " + error);
-            }
-        } else {
-            READWRITE(descriptor->ToString());
+    void DeserializeDescriptor(const std::string& str)
+    {
+        std::string error;
+        FlatSigningProvider keys;
+        descriptor = Parse(str, keys, error, true);
+        if (!descriptor) {
+            throw std::ios_base::failure("Invalid descriptor: " + error);
         }
-        READWRITE(creation_time);
-        READWRITE(next_index);
-        READWRITE(range_start);
-        READWRITE(range_end);
+    }
+
+    SERIALIZE_METHODS(WalletDescriptor, obj)
+    {
+        std::string descriptor_str;
+        SER_WRITE(obj, descriptor_str = obj.descriptor->ToString());
+        READWRITE(descriptor_str, obj.creation_time, obj.next_index, obj.range_start, obj.range_end);
+        SER_READ(obj, obj.DeserializeDescriptor(descriptor_str));
     }
 
     WalletDescriptor() {}

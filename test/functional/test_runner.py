@@ -42,7 +42,7 @@ except UnicodeDecodeError:
 if os.name != 'nt' or sys.getwindowsversion() >= (10, 0, 14393):
     if os.name == 'nt':
         import ctypes
-        kernel32 = ctypes.windll.kernel32
+        kernel32 = ctypes.windll.kernel32  # type: ignore
         ENABLE_VIRTUAL_TERMINAL_PROCESSING = 4
         STD_OUTPUT_HANDLE = -11
         STD_ERROR_HANDLE = -12
@@ -67,7 +67,12 @@ TEST_EXIT_PASSED = 0
 TEST_EXIT_SKIPPED = 77
 
 TEST_FRAMEWORK_MODULES = [
+    "address",
+    "blocktools",
+    "muhash",
     "script",
+    "segwit_addr",
+    "util",
 ]
 
 EXTENDED_SCRIPTS = [
@@ -103,7 +108,6 @@ BASE_SCRIPTS = [
     'wallet_listtransactions.py',
     # vv Tests less than 60s vv
     'p2p_sendheaders.py',
-    'wallet_zapwallettxes.py',
     'wallet_importmulti.py',
     'mempool_limit.py',
     'rpc_txoutproof.py',
@@ -151,17 +155,20 @@ BASE_SCRIPTS = [
     'feature_proxy.py',
     'rpc_signrawtransaction.py',
     'wallet_groups.py',
+    'p2p_addrv2_relay.py',
     'p2p_disconnect_ban.py',
     'rpc_decodescript.py',
     'rpc_blockchain.py',
     'rpc_deprecated.py',
     'wallet_disable.py',
     'p2p_addr_relay.py',
+    'p2p_getaddr_caching.py',
+    'p2p_getdata.py',
     'rpc_net.py',
     'wallet_keypool.py',
     'wallet_keypool.py --descriptors',
     'wallet_descriptor.py',
-    'p2p_mempool.py',
+    'p2p_nobloomfilter_messages.py',
     'p2p_filter.py',
     'rpc_setban.py',
     'p2p_blocksonly.py',
@@ -187,8 +194,10 @@ BASE_SCRIPTS = [
     'rpc_preciousblock.py',
     'wallet_importprunedfunds.py',
     'p2p_leak_tx.py',
+    'p2p_eviction.py',
     'rpc_signmessage.py',
     'rpc_generateblock.py',
+    'rpc_generate.py',
     'wallet_balance.py',
     'feature_nulldummy.py',
     'mempool_accept.py',
@@ -201,6 +210,7 @@ BASE_SCRIPTS = [
     'rpc_bind.py --ipv6',
     'rpc_bind.py --nonloopback',
     'mining_basic.py',
+    'feature_signet.py',
     'wallet_bumpfee.py',
     'wallet_implicitsegwit.py',
     'rpc_named_arguments.py',
@@ -218,6 +228,7 @@ BASE_SCRIPTS = [
     'rpc_estimatefee.py',
     'rpc_getblockstats.py',
     'wallet_create_tx.py',
+    'wallet_send.py',
     'p2p_fingerprint.py',
     'feature_uacomment.py',
     'wallet_coinbase_category.py',
@@ -225,23 +236,28 @@ BASE_SCRIPTS = [
     'feature_loadblock.py',
     'p2p_dos_header_tree.py',
     'p2p_unrequested_blocks.py',
+    'p2p_blockfilters.py',
     'feature_includeconf.py',
     'feature_asmap.py',
     'mempool_unbroadcast.py',
+    'mempool_compatibility.py',
     'rpc_deriveaddresses.py',
     'rpc_deriveaddresses.py --usecli',
+    'p2p_ping.py',
     'rpc_scantxoutset.py',
     'feature_logging.py',
     'p2p_node_network_limited.py',
     'p2p_permissions.py',
     'feature_blocksdir.py',
+    'wallet_startup.py',
     'feature_config_args.py',
-    'rpc_getaddressinfo_labels_purpose_deprecation.py',
-    'rpc_getaddressinfo_label_deprecation.py',
+    'feature_settings.py',
     'rpc_getdescriptorinfo.py',
+    'rpc_getpeerinfo_deprecation.py',
     'rpc_help.py',
     'feature_help.py',
     'feature_shutdown.py',
+    'p2p_ibd_txrelay.py',
     # Don't append tests at the end to avoid merge conflicts
     # Put them in a random line within the section that fits their approximate run-time
 ]
@@ -392,11 +408,12 @@ def run_tests(*, test_list, src_dir, build_dir, tmpdir, jobs=1, enable_coverage=
     args = args or []
 
     # Warn if bitcoind is already running
-    # pidof might fail or return an empty string if bitcoind is not running
     try:
-        if subprocess.check_output(["pidof", "bitcoind"]) not in [b'']:
+        # pgrep exits with code zero when one or more matching processes found
+        if subprocess.run(["pgrep", "-x", "bitcoind"], stdout=subprocess.DEVNULL).returncode == 0:
             print("%sWARNING!%s There is already a bitcoind process running on this system. Tests may fail unexpectedly due to resource contention!" % (BOLD[1], BOLD[0]))
-    except (OSError, subprocess.SubprocessError):
+    except OSError:
+        # pgrep not supported
         pass
 
     # Warn if there is a cache directory
@@ -703,14 +720,16 @@ class RPCCoverage():
         Return a set of currently untested RPC commands.
 
         """
-        # This is shared from `test/functional/test-framework/coverage.py`
+        # This is shared from `test/functional/test_framework/coverage.py`
         reference_filename = 'rpc_interface.txt'
         coverage_file_prefix = 'coverage.'
 
         coverage_ref_filename = os.path.join(self.dir, reference_filename)
         coverage_filenames = set()
         all_cmds = set()
-        covered_cmds = set()
+        # Consider RPC generate covered, because it is overloaded in
+        # test_framework/test_node.py and not seen by the coverage check.
+        covered_cmds = set({'generate'})
 
         if not os.path.isfile(coverage_ref_filename):
             raise RuntimeError("No coverage reference found")
